@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL Fluid Universe</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            height: 100vh;
+            touch-action: none;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        #bgCanvas {
+            z-index: 1;
+            filter: blur(20px);
+            opacity: 0.3;
+        }
+        #webglCanvas {
+            z-index: 2;
+        }
+        #mainCanvas {
+            z-index: 3;
+        }
+        .controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            z-index: 4;
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 90%;
+        }
+        button, .slider-container {
+            background: linear-gradient(45deg, rgba(255,255,255,0.15), rgba(255,255,255,0.1));
+            border: none;
+            color: white;
+            padding: 8px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        button:hover {
+            background: rgba(255,255,255,0.25);
+            transform: scale(1.05);
+        }
+        input[type="range"] {
+            width: 120px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="bgCanvas"></canvas>
+    <canvas id="webglCanvas"></canvas>
+    <canvas id="mainCanvas"></canvas>
+    
+    <div class="controls">
+        <button id="modeBtn">Режим: Галактика</button>
+        <button id="colorBtn">Палитра</button>
+        <button id="webglBtn">WebGL: Вкл</button>
+        <div class="slider-container">
+            <input type="range" id="particleSlider" min="100" max="1500" value="600">
+            <label for="particleSlider">Частицы</label>
+        </div>
+    </div>
+
+    <script>
+        // Инициализация холстов
+        const bgCanvas = document.getElementById('bgCanvas');
+        const webglCanvas = document.getElementById('webglCanvas');
+        const mainCanvas = document.getElementById('mainCanvas');
+        const modeBtn = document.getElementById('modeBtn');
+        const colorBtn = document.getElementById('colorBtn');
+        const webglBtn = document.getElementById('webglBtn');
+        const particleSlider = document.getElementById('particleSlider');
+
+        // Конфигурация
+        const config = {
+            modes: [
+                { name: 'Галактика', force: 0.3, particleInteraction: true },
+                { name: 'Плазма', force: 0.5, particleInteraction: false },
+                { name: 'Кванты', force: 1.2, particleInteraction: true },
+                { name: 'Вихрь', force: 0.7, particleInteraction: false },
+                { name: 'Мембрана', force: 0.4, particleInteraction: true }
+            ],
+            currentMode: 0,
+            colorSchemes: generateColorSchemes(),
+            currentScheme: 0,
+            particles: 600,
+            bgParticles: 80,
+            autoChangeBackground: true,
+            webglEnabled: true
+        };
+
+        // Инициализация размеров
+        function initSizes() {
+            bgCanvas.width = webglCanvas.width = mainCanvas.width = window.innerWidth;
+            bgCanvas.height = webglCanvas.height = mainCanvas.height = window.innerHeight;
+        }
+        initSizes();
+
+        // WebGL инициализация
+        const gl = webglCanvas.getContext('webgl');
+        let webglProgram, webglBuffer;
+        let webglTime = 0;
+        
+        function initWebGL() {
+            if (!gl) {
+                console.warn("WebGL not supported");
+                config.webglEnabled = false;
+                webglBtn.style.display = 'none';
+                return;
+            }
+
+            // Вершинный шейдер
+            const vsSource = `
+                attribute vec2 position;
+                void main() {
+                    gl_Position = vec4(position, 0.0, 1.0);
+                }
+            `;
+
+            // Фрагментный шейдер (сложный эффект жидкости)
+            const fsSource = `
+                precision highp float;
+                uniform float time;
+                uniform vec2 resolution;
+                
+                void main() {
+                    vec2 uv = gl_FragCoord.xy / resolution.xy;
+                    uv -= 0.5;
+                    uv.x *= resolution.x / resolution.y;
+                    
+                    float d = length(uv);
+                    float c = smoothstep(0.2, 0.0, d);
+                    
+                    vec3 col = vec3(0.0);
+                    col += 0.1 / abs(d - 0.2 + sin(time + uv.x * 10.0) * 0.05);
+                    col += 0.1 / abs(d - 0.3 + cos(time * 0.7 + uv.y * 8.0) * 0.05);
+                    col += 0.1 / abs(d - 0.4 + sin(time * 1.3 + (uv.x + uv.y) * 5.0) * 0.05);
+                    
+                    col *= vec3(0.5, 0.7, 1.0) * 2.0;
+                    col *= c;
+                    
+                    gl_FragColor = vec4(col, 0.3);
+                }
+            `;
+
+            // Компиляция шейдеров
+            const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vertexShader, vsSource);
+            gl.compileShader(vertexShader);
+
+            const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fragmentShader, fsSource);
+            gl.compileShader(fragmentShader);
+
+            // Создание программы
+            webglProgram = gl.createProgram();
+            gl.attachShader(webglProgram, vertexShader);
+            gl.attachShader(webglProgram, fragmentShader);
+            gl.linkProgram(webglProgram);
+            gl.useProgram(webglProgram);
+
+            // Буфер вершин (просто покрывает весь экран)
+            const positions = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+            webglBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, webglBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+            const positionLocation = gl.getAttribLocation(webglProgram, "position");
+            gl.enableVertexAttribArray(positionLocation);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+            // Получение uniform-переменных
+            const resolutionLocation = gl.getUniformLocation(webglProgram, "resolution");
+            gl.uniform2f(resolutionLocation, webglCanvas.width, webglCanvas.height);
+        }
+
+        function renderWebGL() {
+            if (!config.webglEnabled) return;
+            
+            webglTime += 0.01;
+            
+            gl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            const timeLocation = gl.getUniformLocation(webglProgram, "time");
+            gl.uniform1f(timeLocation, webglTime);
+            
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+
+        // Генератор цветовых палитр
+        function generateColorSchemes() {
+            const schemes = [];
+            for(let i = 0; i < 12; i++) {
+                const hue = Math.random() * 360;
+                schemes.push([
+                    `hsl(${hue}, 70%, 60%)`,
+                    `hsl(${(hue + 60) % 360}, 70%, 60%)`,
+                    `hsl(${(hue + 120) % 360}, 70%, 60%)`,
+                    `hsl(${(hue + 180) % 360}, 70%, 50%)`
+                ]);
+            }
+            return schemes;
+        }
+
+        // Класс системы частиц
+        class ParticleSystem {
+            constructor(canvas, isBackground) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.particles = [];
+                this.isBackground = isBackground;
+                this.init();
+                this.angle = 0;
+            }
+
+            init() {
+                const count = this.isBackground ? config.bgParticles : config.particles;
+                for(let i = 0; i < count; i++) {
+                    this.particles.push(this.createParticle());
+                }
+            }
+
+            createParticle() {
+                return {
+                    x: Math.random() * this.canvas.width,
+                    y: Math.random() * this.canvas.height,
+                    vx: (Math.random() - 0.5) * (this.isBackground ? 0.3 : 2),
+                    vy: (Math.random() - 0.5) * (this.isBackground ? 0.3 : 2),
+                    size: this.isBackground ? 
+                        Math.random() * 20 + 10 : 
+                        Math.random() * 6 + 2,
+                    baseSize: this.isBackground ? 
+                        Math.random() * 20 + 10 : 
+                        Math.random() * 6 + 2,
+                    mass: Math.random() * 2 + 0.5,
+                    color: config.colorSchemes[config.currentScheme][
+                        Math.floor(Math.random() * config.colorSchemes[config.currentScheme].length)
+                    ],
+                    connections: new Set()
+                };
+            }
+
+            update(mouseX, mouseY, isInteracting) {
+                // Автоматическая смена фона
+                if(this.isBackground && config.autoChangeBackground) {
+                    this.angle += 0.005;
+                    this.particles.forEach(p => {
+                        p.x += Math.sin(this.angle + p.x * 0.01) * 0.3;
+                        p.y += Math.cos(this.angle + p.y * 0.01) * 0.3;
+                        p.color = `hsl(${(this.angle * 50 + p.x * 0.1) % 360}, 50%, 60%)`;
+                    });
+                }
+
+                this.particles.forEach((p, i) => {
+                    if(!this.isBackground) {
+                        // Сложные взаимодействия
+                        if(config.modes[config.currentMode].particleInteraction) {
+                            this.particles.forEach((other, j) => {
+                                if(i !== j) {
+                                    const dx = other.x - p.x;
+                                    const dy = other.y - p.y;
+                                    const dist = Math.sqrt(dx*dx + dy*dy);
+                                    
+                                    if(dist < 80) {
+                                        const force = (80 - dist) / 80 * 0.1;
+                                        p.vx += (dx / dist) * force * p.mass;
+                                        p.vy += (dy / dist) * force * p.mass;
+                                        
+                                        // Формирование связей
+                                        if(dist < 40 && !p.connections.has(j)) {
+                                            p.connections.add(j);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        // Взаимодействие с мышью
+                        const dx = mouseX - p.x;
+                        const dy = mouseY - p.y;
+                        const dist = Math.sqrt(dx*dx + dy*dy);
+                        
+                        if(dist < 250 && isInteracting) {
+                            const force = (250 - dist) / 250;
+                            const angle = Math.atan2(dy, dx);
+                            
+                            switch(config.modes[config.currentMode].name) {
+                                case 'Галактика':
+                                    p.vx += Math.cos(angle + Math.PI/2) * force * 0.4;
+                                    p.vy += Math.sin(angle + Math.PI/2) * force * 0.4;
+                                    break;
+                                case 'Плазма':
+                                    p.vx += (Math.random() - 0.5) * force * 2;
+                                    p.vy += (Math.random() - 0.5) * force * 2;
+                                    break;
+                                case 'Кванты':
+                                    p.vx += Math.cos(angle) * force * 0.6;
+                                    p.vy += Math.sin(angle) * force * 0.6;
+                                    break;
+                                case 'Вихрь':
+                                    p.vx += Math.cos(angle + Math.PI) * force * 0.3;
+                                    p.vy += Math.sin(angle + Math.PI) * force * 0.3;
+                                    break;
+                                case 'Мембрана':
+                                    p.vx += Math.sin(angle * 2) * force * 0.5;
+                                    p.vy += Math.cos(angle * 2) * force * 0.5;
+                                    break;
+                            }
+                            
+                            p.size = p.baseSize * (1 + force * 4);
+                        }
+                    }
+
+                    // Обновление позиции
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    
+                    // Границы с упругим отскоком
+                    if(p.x < 0) { p.x = 0; p.vx *= -0.8; }
+                    if(p.x > this.canvas.width) { p.x = this.canvas.width; p.vx *= -0.8; }
+                    if(p.y < 0) { p.y = 0; p.vy *= -0.8; }
+                    if(p.y > this.canvas.height) { p.y = this.canvas.height; p.vy *= -0.8; }
+
+                    p.vx *= 0.97;
+                    p.vy *= 0.97;
+                    p.size += (p.baseSize - p.size) * 0.1;
+                });
+            }
+
+            draw() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                if(!this.isBackground) {
+                    // Рисование связей
+                    this.particles.forEach((p, i) => {
+                        p.connections.forEach(j => {
+                            const other = this.particles[j];
+                            const dx = other.x - p.x;
+                            const dy = other.y - p.y;
+                            const dist = Math.sqrt(dx*dx + dy*dy);
+                            
+                            if(dist < 80) {
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(p.x, p.y);
+                                this.ctx.lineTo(other.x, other.y);
+                                this.ctx.strokeStyle = `rgba(255,255,255,${0.2 - dist/400})`;
+                                this.ctx.lineWidth = 1;
+                                this.ctx.stroke();
+                            }
+                        });
+                        p.connections.clear();
+                    });
+                }
+
+                // Рисование частиц
+                this.particles.forEach(p => {
+                    this.ctx.beginPath();
+                    this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                    
+                    const gradient = this.ctx.createRadialGradient(
+                        p.x, p.y, 0, p.x, p.y, p.size
+                    );
+                    gradient.addColorStop(0, p.color);
+                    gradient.addColorStop(1, p.color.replace('1)', '0)'));
+                    
+                    this.ctx.fillStyle = gradient;
+                    this.ctx.shadowBlur = p.size * 2;
+                    this.ctx.shadowColor = p.color;
+                    this.ctx.fill();
+                });
+            }
+        }
+
+        // Создание систем
+        const bgSystem = new ParticleSystem(bgCanvas, true);
+        const mainSystem = new ParticleSystem(mainCanvas, false);
+        initWebGL();
+
+        // Обработчики событий
+        let mouseX = window.innerWidth/2;
+        let mouseY = window.innerHeight/2;
+        let isInteracting = false;
+
+        window.addEventListener('mousemove', e => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            isInteracting = true;
+        });
+
+        window.addEventListener('mouseout', () => isInteracting = false);
+
+        window.addEventListener('touchmove', e => {
+            e.preventDefault();
+            mouseX = e.touches[0].clientX;
+            mouseY = e.touches[0].clientY;
+            isInteracting = true;
+        }, { passive: false });
+
+        // Управление
+        modeBtn.addEventListener('click', () => {
+            config.currentMode = (config.currentMode + 1) % config.modes.length;
+            modeBtn.textContent = `Режим: ${config.modes[config.currentMode].name}`;
+        });
+
+        colorBtn.addEventListener('click', () => {
+            config.currentScheme = (config.currentScheme + 1) % config.colorSchemes.length;
+            [bgSystem, mainSystem].forEach(sys => {
+                sys.particles.forEach(p => {
+                    p.color = config.colorSchemes[config.currentScheme][
+                        Math.floor(Math.random() * config.colorSchemes[config.currentScheme].length)
+                    ];
+                });
+            });
+        });
+
+        webglBtn.addEventListener('click', () => {
+            config.webglEnabled = !config.webglEnabled;
+            webglBtn.textContent = `WebGL: ${config.webglEnabled ? 'Вкл' : 'Выкл'}`;
+        });
+
+        particleSlider.addEventListener('input', e => {
+            config.particles = e.target.value;
+            mainSystem.particles = [];
+            mainSystem.init();
+        });
+
+        window.addEventListener('resize', () => {
+            initSizes();
+            [bgSystem, mainSystem].forEach(sys => {
+                sys.particles = [];
+                sys.init();
+            });
+            if (gl) {
+                const resolutionLocation = gl.getUniformLocation(webglProgram, "resolution");
+                gl.uniform2f(resolutionLocation, webglCanvas.width, webglCanvas.height);
+            }
+        });
+
+        // Анимация
+        function animate() {
+            bgSystem.update(mouseX, mouseY, isInteracting);
+            bgSystem.draw();
+            
+            if (config.webglEnabled) renderWebGL();
+            
+            mainSystem.update(mouseX, mouseY, isInteracting);
+            mainSystem.draw();
+            
+            requestAnimationFrame(animate);
+        }
+        animate();
+    </script>
+</body>
+</html>
